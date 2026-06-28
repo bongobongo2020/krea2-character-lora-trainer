@@ -78,6 +78,7 @@ const state = {
   project: null,        // currently open project object
   logOffset: 0,
   pollTimer: null,
+  lastOutputsRefresh: 0,  // throttle live checkpoint refresh during training
 };
 
 // ---- view switching -----------------------------------------------------
@@ -522,6 +523,12 @@ async function refreshStatus() {
     renderProgress(st);
     refreshVram();
     if (!state.pollTimer) startPolling();
+    // Checkpoints/samples are written mid-run; refresh them live (throttled)
+    // so they show up without waiting for training to finish.
+    if (Date.now() - state.lastOutputsRefresh > 15000) {
+      state.lastOutputsRefresh = Date.now();
+      refreshOutputs();
+    }
   } else {
     stopBtn.disabled = true; startBtn.disabled = false;
     if (st.exit_code === 0) {
