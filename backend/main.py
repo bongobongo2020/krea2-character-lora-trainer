@@ -385,9 +385,87 @@ def setup_logs(offset: int = 0) -> dict[str, Any]:
     return setup_tasks.runner.read_logs(offset)
 
 
-@app.get("/api/gpu")
-def gpu_status() -> dict[str, Any]:
-    """Free/used VRAM + processes holding it, so the UI can warn before OOM."""
+# Core OS/compositor processes that legitimately hold GPU memory but must
+# never be offered an "End process" button (lowercased, Windows).
+_PROTECTED_PROCS = {
+    "system", "registry", "dwm.exe", "csrss.exe", "winlogon.exe", "wininit.exe",
+    "services.exe", "lsass.exe", "smss.exe", "fontdrvhost.exe", "sihost.exe",
+    "explorer.exe", "ctfmon.exe", "taskhostw.exe", "searchhost.exe",
+    "shellexperiencehost.exe", "startmenuexperiencehost.exe", "textinputhost.exe",
+}
+
+
+def _windows_pid_names(pids: set[int]) -> dict[int, str]:
+    """Resolve PID -> image name on Windows via tasklist."""
+    import csv
+    import io
+    import subprocess
+    try:
+        out = subprocess.run(["tasklist", "/fo", "csv", "/nh"],
+                             capture_output=True, text=True, timeout=10)
+    except Exception:
+        return {}
+    names: dict[int, str] = {}
+    for row in csv.reader(io.StringIO(out.stdout)):
+        if len(row) >= 2:
+            try:
+                pid = int(row[1])
+            except ValueError:
+                continue
+            if pid in pids:
+                names[pid] = row[0]
+    return names
+
+
+_win_procs_cache: dict[str, Any] = {"at": 0.0, "procs": []}
+
+
+def _windows_gpu_procs() -> list[dict[str, Any]]:
+    """Per-process GPU memory on Windows, where nvidia-smi reports no compute
+    apps under the consumer WDDM driver. Reads the same perf counter Task
+    Manager uses (\\GPU Process Memory(*)\\Dedicated Usage), then resolves names.
+    Cached for a few seconds — typeperf takes ~1-2s and /api/gpu is polled."""
+    import re
+    import subprocess
+    import time
+    if time.time() - _win_procs_cache["at"] < 5:
+        return _win_procs_cache["procs"]
+    try:
+        out = subprocess.run(
+            ["typeperf", r"\GPU Process Memory(*)\Dedicated Usage", "-sc", "1"],
+            capture_output=True, text=True, timeout=15)
+        used: dict[int, int] = {}
+        lines = [ln for ln in out.stdout.splitlines() if ln.strip()]
+        header = next((ln for ln in lines if ln.startswith('"(PDH-CSV')), None)
+        if header is not None and lines.index(header) + 1 < len(lines):
+            cols = [c.strip('"') for c in header.split('","')]
+            vals = [c.strip('"') for c in lines[lines.index(header) + 1].split('","')]
+            for col, val in zip(cols[1:], vals[1:]):  # skip the timestamp column
+                m = re.search(r"pid_(\d+)_", col)
+                if not m:
+                    continue
+                try:
+                    b = float(val)
+                except ValueError:
+                    continue
+                if b > 0:
+                    used[int(m.group(1))] = used.get(int(m.group(1)), 0) + int(b)
+        names = _windows_pid_names(set(used)) if used else {}
+        procs = []
+        for pid, b in sorted(used.items(), key=lambda kv: -kv[1]):
+            name = names.get(pid, f"pid {pid}")
+            procs.append({"pid": str(pid), "name": name, "used_mb": int(b // (1024 * 1024)),
+                          "system": name.lower() in _PROTECTED_PROCS})
+    except Exception:
+        procs = []
+    _win_procs_cache["at"] = time.time()
+    _win_procs_cache["procs"] = procs
+    return procs
+
+
+def _gpu_status() -> dict[str, Any]:
+    """Free/used VRAM + processes holding it (no port enrichment — hot path)."""
+    import os
     import shutil
     import subprocess
     if not shutil.which("nvidia-smi"):
@@ -410,14 +488,32 @@ def gpu_status() -> dict[str, Any]:
                 continue
             pid, pname, mem = [x.strip() for x in line.split(",")]
             procs.append({"pid": pid, "name": pname.split("/")[-1], "used_mb": int(mem)})
+        # WDDM (consumer Windows) can't list compute apps; fall back to the
+        # Windows perf counter so a VRAM-hogging server is still visible.
+        if not procs and os.name == "nt" and gpus and gpus[0]["used_mb"] > 800:
+            procs = _windows_gpu_procs()
         return {"available": True, "gpus": gpus, "processes": procs}
     except Exception:
         return {"available": False}
 
 
+@app.get("/api/gpu")
+def gpu_status() -> dict[str, Any]:
+    """Free/used VRAM + processes holding it, so the UI can warn before OOM.
+    Enriches each process with the TCP ports it listens on (helps identify a
+    stray model server, e.g. one on :8080)."""
+    s = _gpu_status()
+    for pr in s.get("processes", []):
+        try:
+            pr["ports"] = _pid_listen_ports(int(pr["pid"]))
+        except Exception:
+            pr["ports"] = []
+    return s
+
+
 def _gpu_pids() -> dict[int, dict[str, Any]]:
     """Map of pid -> info for processes currently holding VRAM."""
-    status = gpu_status()
+    status = _gpu_status()
     return {int(p["pid"]): p for p in status.get("processes", [])}
 
 
@@ -451,7 +547,7 @@ def _pid_listen_ports(pid: int) -> list[int]:
 
 
 def _gpu_free_mb() -> int | None:
-    g = gpu_status()
+    g = _gpu_status()
     if g.get("available") and g.get("gpus"):
         return g["gpus"][0]["free_mb"]
     return None
@@ -491,7 +587,7 @@ def auto_free_vram(settings: dict[str, Any], need_mb: int) -> dict[str, Any]:
     import time
     actions = []
     # Largest VRAM users first.
-    for p in sorted(gpu_status().get("processes", []), key=lambda x: -x["used_mb"]):
+    for p in sorted(_gpu_status().get("processes", []), key=lambda x: -x["used_mb"]):
         if (_gpu_free_mb() or 0) >= need_mb:
             break
         port = _comfy_unload(int(p["pid"]))
@@ -509,24 +605,58 @@ class FreeVramIn(BaseModel):
     mode: str = "comfy"  # "comfy" (gentle /free API) or "kill"
 
 
+def _terminate_pid(pid: int) -> None:
+    """End a process by PID, cross-platform. Raises PermissionError if the OS
+    refuses (e.g. an elevated/other-owner process)."""
+    import os
+    import time
+    if os.name == "nt":
+        # SIGTERM/SIGKILL don't exist on Windows; taskkill is the reliable path
+        # (/T also ends child processes, e.g. a server's worker subprocess).
+        import subprocess
+        r = subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
+                           capture_output=True, text=True, timeout=10)
+        if r.returncode != 0:
+            msg = (r.stderr or r.stdout or "").strip()
+            low = msg.lower()
+            if "denied" in low or "access" in low:
+                raise PermissionError(msg)
+            if "not found" in low or "no running" in low:
+                return  # already gone — treat as success
+            raise RuntimeError(msg or "taskkill failed")
+        return
+    import signal
+    try:
+        os.kill(pid, signal.SIGTERM)
+        for _ in range(10):
+            time.sleep(0.5)
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return
+
+
 @app.post("/api/gpu/free")
 def gpu_free(payload: FreeVramIn) -> dict[str, Any]:
     """Free VRAM held by a GPU process — gently via ComfyUI's /free API, or by
     ending the process. Only PIDs that currently hold VRAM may be targeted."""
-    import os
-    import signal
     import time
 
     procs = _gpu_pids()
     if payload.pid not in procs:
         raise HTTPException(400, "That PID is not currently using the GPU.")
-    before = gpu_status()["gpus"][0]["free_mb"]
+    if procs[payload.pid].get("system"):
+        raise HTTPException(400, "That is a core system process and won't be ended from here.")
+    before = _gpu_status()["gpus"][0]["free_mb"]
 
     if payload.mode == "comfy":
         port = _comfy_unload(payload.pid)
         if port is not None:
             time.sleep(1.5)
-            after = gpu_status()["gpus"][0]["free_mb"]
+            after = _gpu_status()["gpus"][0]["free_mb"]
             return {"ok": True, "method": f"ComfyUI /free on :{port}",
                     "freed_mb": after - before, "free_mb": after}
         raise HTTPException(
@@ -535,21 +665,14 @@ def gpu_free(payload: FreeVramIn) -> dict[str, Any]:
 
     # mode == "kill"
     try:
-        os.kill(payload.pid, signal.SIGTERM)
-        for _ in range(10):
-            time.sleep(0.5)
-            try:
-                os.kill(payload.pid, 0)
-            except ProcessLookupError:
-                break
-        else:
-            os.kill(payload.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
+        _terminate_pid(payload.pid)
     except PermissionError:
-        raise HTTPException(403, "Not allowed to end that process (different owner).")
+        raise HTTPException(403, "Not allowed to end that process — run the app as the "
+                                 "same user (or as administrator).")
+    except Exception as e:
+        raise HTTPException(500, f"Could not end the process: {e}")
     time.sleep(1.0)
-    after = gpu_status()["gpus"][0]["free_mb"]
+    after = _gpu_status()["gpus"][0]["free_mb"]
     return {"ok": True, "method": "ended process", "freed_mb": after - before, "free_mb": after}
 
 

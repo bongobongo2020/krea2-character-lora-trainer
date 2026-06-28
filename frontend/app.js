@@ -239,22 +239,31 @@ function renderVramProcs(processes) {
       const row = document.createElement("div");
       row.className = "vram-proc";
       const isComfy = /comfy/i.test(p.name);
-      row.innerHTML = `<span class="vram-proc-name">${p.name} <span class="muted">· PID ${p.pid} · ${(p.used_mb / 1024).toFixed(1)} GB</span></span>`;
+      const ports = (p.ports || []).length ? ` · :${p.ports.join(", :")}` : "";
+      row.innerHTML = `<span class="vram-proc-name">${p.name} <span class="muted">· PID ${p.pid} · ${(p.used_mb / 1024).toFixed(1)} GB${ports}</span></span>`;
       const actions = document.createElement("span");
       actions.className = "vram-proc-actions";
-      if (isComfy) {
-        const unload = document.createElement("button");
-        unload.className = "ghost small";
-        unload.textContent = "Unload models";
-        unload.title = "Calls ComfyUI's /free API — frees VRAM without closing ComfyUI";
-        unload.addEventListener("click", () => freeVram(p.pid, "comfy", p.name));
-        actions.appendChild(unload);
+      if (p.system) {
+        // Core OS/compositor process — show it for context, but never offer to kill it.
+        const tag = document.createElement("span");
+        tag.className = "muted";
+        tag.textContent = "system process";
+        actions.appendChild(tag);
+      } else {
+        if (isComfy) {
+          const unload = document.createElement("button");
+          unload.className = "ghost small";
+          unload.textContent = "Unload models";
+          unload.title = "Calls ComfyUI's /free API — frees VRAM without closing ComfyUI";
+          unload.addEventListener("click", () => freeVram(p.pid, "comfy", p.name));
+          actions.appendChild(unload);
+        }
+        const kill = document.createElement("button");
+        kill.className = "danger small";
+        kill.textContent = "End process";
+        kill.addEventListener("click", () => freeVram(p.pid, "kill", p.name));
+        actions.appendChild(kill);
       }
-      const kill = document.createElement("button");
-      kill.className = "danger small";
-      kill.textContent = "End process";
-      kill.addEventListener("click", () => freeVram(p.pid, "kill", p.name));
-      actions.appendChild(kill);
       row.appendChild(actions);
       el.appendChild(row);
     }
