@@ -16,6 +16,70 @@ from pathlib import Path
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 
+
+def _human(num: float) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if num < 1024:
+            return f"{num:.1f}{unit}"
+        num /= 1024
+    return f"{num:.1f}TB"
+
+
+def _make_progress_tqdm():
+    """A tqdm subclass that prints newline-terminated progress lines.
+
+    Hugging Face's default bars redraw with carriage returns and emit no newline
+    until a file finishes. Because this worker's stdout is piped to the web log
+    line-by-line, a multi-GB download otherwise looks completely frozen. This
+    throttles to one readable line every few seconds per bar instead, so the UI
+    keeps showing progress.
+    """
+    from huggingface_hub.utils import tqdm as hf_tqdm
+
+    class _LineTqdm(hf_tqdm):
+        _last: dict = {}
+
+        def display(self, msg=None, pos=None):
+            import time
+            key = self.desc or id(self)
+            now = time.time()
+            finished = bool(self.total) and self.n >= self.total
+            if now - _LineTqdm._last.get(key, 0.0) < 3.0 and not finished:
+                return False
+            _LineTqdm._last[key] = now
+            desc = (self.desc or "downloading").strip().rstrip(":") or "downloading"
+            if self.total:
+                pct = 100.0 * self.n / self.total
+                amount = (f"{_human(self.n)}/{_human(self.total)}"
+                          if getattr(self, "unit", "it") == "B"
+                          else f"{self.n}/{self.total}")
+                print(f"  {desc}: {pct:3.0f}%  ({amount})", flush=True)
+            else:
+                print(f"  {desc}: {self.n}", flush=True)
+            return True
+
+    return _LineTqdm
+
+
+def _prefetch_model(model_id: str) -> None:
+    """Download the caption model up front, with visible progress.
+
+    ``from_pretrained`` downloads silently; doing a ``snapshot_download`` first
+    streams reassuring progress, then the actual load finds everything cached and
+    returns quickly.
+    """
+    try:
+        from huggingface_hub import snapshot_download
+    except Exception:
+        return  # let from_pretrained handle it on very old hubs
+    print(f"Ensuring caption model {model_id} is downloaded "
+          f"(one-time, several GB — cached for next time)…", flush=True)
+    try:
+        snapshot_download(model_id, tqdm_class=_make_progress_tqdm())
+        print(f"Caption model {model_id} is ready.", flush=True)
+    except Exception as e:  # non-fatal: from_pretrained will retry / surface it
+        print(f"  (prefetch note: {e}; continuing…)", flush=True)
+
 PROMPT = (
     "Write a single concise training caption for this image as a comma-separated "
     "list of visual tags. Cover the main subject, appearance, hair, clothing, "
@@ -25,6 +89,10 @@ PROMPT = (
 
 
 def main() -> int:
+    import os
+    # The symlink warning on Windows is noisy and alarming but harmless.
+    os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+
     images_dir = Path(sys.argv[1])
     trigger = sys.argv[2] if len(sys.argv) > 2 else ""
     model_id = sys.argv[3] if len(sys.argv) > 3 else "Qwen/Qwen3-VL-4B-Instruct"
@@ -44,6 +112,9 @@ def main() -> int:
     if cuda:
         free, total = torch.cuda.mem_get_info()
         print(f"GPU free: {free/1e9:.1f} GB / {total/1e9:.1f} GB", flush=True)
+
+    # Fetch weights first so the (otherwise silent) download shows progress.
+    _prefetch_model(model_id)
 
     # Load strategy, in order of preference:
     #   1) GPU 4-bit (bitsandbytes) — fits a VLM in a few GB, survives a busy card
