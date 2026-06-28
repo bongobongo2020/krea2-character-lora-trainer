@@ -285,6 +285,10 @@ class Project:
                         # encoder and VAE can be freed from VRAM during training
                         # (big saving on 24 GB cards).
                         "cache_text_embeddings": True,
+                        # Skip the step-0 baseline sample: on Windows that first
+                        # 1024px inference can spill into shared VRAM and stall
+                        # the run for an hour before training begins.
+                        "skip_first_sample": True,
                         "noise_scheduler": "flowmatch",
                         "optimizer": "adamw8bit",
                         "lr": float(p["learning_rate"]),
@@ -294,8 +298,10 @@ class Project:
                     "sample": {
                         "sampler": "flowmatch",
                         "sample_every": int(p["sample_every"]),
-                        "width": 1024,
-                        "height": 1024,
+                        # 512px keeps periodic sampling cheap so it doesn't
+                        # tip a low-VRAM card into shared-memory crawl.
+                        "width": 512,
+                        "height": 512,
                         "prompts": self._sample_prompts(),
                         "neg": "",
                         "seed": int(p["seed"]),
