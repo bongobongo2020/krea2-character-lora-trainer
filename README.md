@@ -85,7 +85,7 @@ step distillation.
 
 ## Quick start — Windows 11 (no command line)
 
-1. Download/extract this project (e.g. `Documents\krea2-character-lora-trainer`).
+1. **[Download the latest release `.zip`](https://github.com/bongobongo2020/krea2-character-lora-trainer/releases/latest)** and extract it (e.g. to `Documents\krea2-character-lora-trainer`).
 2. Open the `windows` folder and **double-click `Install.bat`**.
 
 The guided installer will:
