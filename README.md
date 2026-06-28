@@ -98,6 +98,11 @@ The guided installer will:
 - **optionally** offer to also install the **musubi-tuner (Raw)** engine (Yes/No);
 - create a **desktop shortcut**.
 
+The **Setup** tab mirrors all of this with buttons, and shows engine readiness +
+which models are already cached:
+
+![Setup tab — readiness and model cache](images/setup.png)
+
 Launch with the **“Krea 2 LoRA Trainer”** desktop icon (or `windows\Start.bat`) — your
 browser opens to the app automatically. Windows may prompt to allow the app through the
 firewall (only needed for access from other devices on your network).
@@ -129,13 +134,25 @@ local-only; open the firewall with `sudo ufw allow 8000/tcp` if a device can't c
 2. **Step 1 — Add images** — set a **trigger word**, then drag in images **or a `.zip`**
    (a zip may include matching `.txt` captions). Click **✨ Auto-caption with Qwen-VL** to
    caption everything, or write captions by hand, then **Save captions**.
+
+   ![Dataset step — images and captions](images/dataset.png)
+
 3. **Step 2 — Settings** — sensible, hardware-tuned defaults (LoRA rank/alpha 32, LR 1e-4).
-   Expand the preview to see the exact `config.yaml`/`dataset.toml` and command that will run.
+   The chip shows what your GPU was tuned for; expand the preview to see the exact
+   `config.yaml`/`dataset.toml` and command that will run.
+
+   ![Training settings — auto-tuned for the detected GPU](images/settings.png)
+
 4. **Step 3 — Train** — click **Start training**. If the GPU is busy, ComfyUI is unloaded
    automatically first. Live logs stream in with a step/loss progress bar; **Stop** anytime.
+
+   ![Train step — VRAM banner and automatic freeing](images/training.png)
+
 5. **Step 4 — Download** — checkpoints appear labeled (`Step 500 … Step 1750 … Final`), and
    the **training sample grids** for each checkpoint are shown inline so you can pick the best
    one before it overcooks.
+
+   ![Download step — labeled checkpoints and per-step sample grids](images/checkpoints.png)
 
 ### Using the LoRA on Krea 2 Turbo (ComfyUI)
 
