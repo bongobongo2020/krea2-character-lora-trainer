@@ -1,0 +1,20 @@
+# Runtime data and downloaded engines/models (never commit these)
+workspace/
+ai-toolkit/
+musubi-tuner/
+models/
+ai-models/
+.webvenv/
+
+# Python
+__pycache__/
+*.pyc
+
+# Model weights / large artifacts
+*.safetensors
+*.pt
+*.ckpt
+
+# OS / editor
+.DS_Store
+*.log

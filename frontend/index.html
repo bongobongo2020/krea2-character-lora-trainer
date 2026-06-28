@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Krea2 Character LoRA Trainer</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">◆</span>
+      <div>
+        <h1>Krea2 Character LoRA Trainer</h1>
+        <p class="subtitle">Train a character LoRA for the Krea 2 image model — no command line needed.</p>
+      </div>
+    </div>
+    <nav class="tabs">
+      <button class="tab active" data-view="projects">Projects</button>
+      <button class="tab" data-view="settings">Setup</button>
+    </nav>
+  </header>
+
+  <main id="app">
+    <!-- PROJECTS LIST -->
+    <section id="view-projects" class="view active">
+      <div class="row between">
+        <h2>Your projects</h2>
+        <div class="new-project">
+          <input id="new-project-name" type="text" placeholder="New project name, e.g. Masafee" />
+          <select id="new-project-engine" title="Training engine">
+            <option value="aitoolkit">Krea 2 Turbo (AI Toolkit) — recommended</option>
+            <option value="musubi">Krea 2 Raw (musubi-tuner)</option>
+          </select>
+          <button id="create-project" class="primary">Create</button>
+        </div>
+      </div>
+      <div id="env-banner" class="banner hidden"></div>
+      <div id="project-list" class="cards"></div>
+    </section>
+
+    <!-- PROJECT DETAIL -->
+    <section id="view-project" class="view">
+      <button class="link back" data-view="projects">← Back to projects</button>
+      <h2 id="project-title"></h2>
+      <span id="project-engine-badge" class="badge"></span>
+
+      <div class="steps">
+        <!-- Step 1: dataset -->
+        <div class="step">
+          <h3><span class="num">1</span> Add training images</h3>
+          <p class="hint">Upload 10–20 images of your character. Each image needs a caption that includes your trigger word.</p>
+          <div class="trigger-row">
+            <label>Trigger word
+              <input id="trigger-word" type="text" placeholder="mychar" />
+            </label>
+            <button id="apply-trigger" class="ghost" title="Prepend the trigger word to every caption">Apply to all captions</button>
+          </div>
+          <div class="dropzone" id="dropzone">
+            <input type="file" id="file-input" multiple accept="image/png,image/jpeg,image/webp,image/bmp" hidden />
+            <input type="file" id="zip-input" accept=".zip" hidden />
+            <p>Drag &amp; drop images <b>or a .zip</b> here, or
+              <button class="link" id="browse-btn">browse images</button> ·
+              <button class="link" id="zip-btn">upload a .zip</button>
+            </p>
+            <p class="dz-sub">A .zip can contain images and matching <code>.txt</code> caption files (same name).</p>
+          </div>
+          <div class="autocaption-bar">
+            <button id="autocaption-btn" class="ghost">✨ Auto-caption with Qwen-VL</button>
+            <label class="inline-check"><input type="checkbox" id="autocaption-overwrite" /> overwrite existing</label>
+            <span id="autocaption-state" class="muted"></span>
+          </div>
+          <pre id="autocaption-log" class="logbox hidden"></pre>
+          <div class="vram-procs"></div>
+
+          <div id="image-grid" class="image-grid"></div>
+          <button id="save-captions" class="primary">Save captions</button>
+          <span id="captions-saved" class="saved-msg"></span>
+        </div>
+
+        <!-- Step 2: parameters -->
+        <div class="step">
+          <h3><span class="num">2</span> Training settings</h3>
+          <p class="hint">Auto-tuned for your GPU. Adjust only if you know what you need.</p>
+          <div id="hw-chip" class="hw-chip hidden"></div>
+          <div id="params-grid" class="params-grid"></div>
+          <details class="preview">
+            <summary>Preview the exact command &amp; config file</summary>
+            <pre id="cmd-preview" class="codeblock">Loading…</pre>
+          </details>
+        </div>
+
+        <!-- Step 3: train -->
+        <div class="step">
+          <h3><span class="num">3</span> Train</h3>
+          <label class="inline-check auto-free-row">
+            <input type="checkbox" id="auto-free-toggle" checked />
+            Automatically free VRAM before training (gently unloads ComfyUI — never kills it)
+          </label>
+          <div id="vram-banner" class="banner hidden"></div>
+          <div id="vram-procs" class="vram-procs"></div>
+          <div class="train-controls">
+            <button id="start-train" class="primary big">▶ Start training</button>
+            <button id="stop-train" class="danger" disabled>■ Stop</button>
+            <span id="train-state" class="train-state">Idle</span>
+          </div>
+          <div id="progress-wrap" class="progress-wrap hidden">
+            <div class="progress-bar"><div id="progress-fill" class="progress-fill"></div></div>
+            <div id="progress-text" class="progress-text"></div>
+          </div>
+          <pre id="log-output" class="logbox">No logs yet. Start a training run to see live output.</pre>
+        </div>
+
+        <!-- Step 4: outputs -->
+        <div class="step">
+          <h3><span class="num">4</span> Download your LoRA</h3>
+          <p class="hint">Checkpoints are saved every few epochs. They work on <b>Krea 2 Turbo</b> (8-step) and the RAW model alike.</p>
+          <div id="output-list" class="output-list"><p class="muted">No checkpoints yet.</p></div>
+
+          <div id="samples-section" class="hidden">
+            <h4 class="samples-title">Training samples <span class="muted">— compare how the character evolves; pick the checkpoint before it overcooks</span></h4>
+            <div id="samples-groups"></div>
+          </div>
+
+          <div class="turbo-tip">
+            <b>Using on Krea Turbo (ComfyUI):</b> load the LoRA at strength <b>0.8</b>, set <b>CFG 1.0</b>, sampler <b>ER-SDE</b>, <b>8 steps</b>. Include your trigger word in the prompt.
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SETTINGS / SETUP -->
+    <section id="view-settings" class="view">
+      <h2>Setup</h2>
+      <p class="hint">Install whichever engine(s) you want — all with buttons, no terminal. You only need one. <b>Krea 2 Turbo (AI Toolkit)</b> is recommended.</p>
+
+      <!-- readiness -->
+      <div class="step">
+        <h3><span class="num">✓</span> Readiness</h3>
+        <div id="env-status" class="env-status"></div>
+        <div id="model-scan" class="model-scan"></div>
+      </div>
+
+      <!-- ENGINE A: AI Toolkit (Turbo) -->
+      <div class="step">
+        <h3><span class="num">A</span> Krea 2 Turbo engine <span class="badge rec">recommended</span></h3>
+        <p class="hint">Trains directly on the (un-gated) <code>krea/Krea-2-Turbo</code> model with the de-distill adapter, so your LoRA runs at full Turbo speed. The base model + adapter download automatically on first training.</p>
+        <div class="btn-row">
+          <button id="install-aitoolkit" class="primary">⬇ Install AI Toolkit</button>
+          <button id="predownload-turbo" class="ghost">Pre-download model + adapter (optional)</button>
+        </div>
+      </div>
+
+      <!-- ENGINE B: musubi (Raw) -->
+      <details class="step">
+        <summary><h3 style="display:inline-flex"><span class="num">B</span> Krea 2 Raw engine (musubi-tuner)</h3></summary>
+        <p class="hint">Alternative engine that trains on the Krea 2 <i>raw</i> model. The LoRA also transfers to Turbo, but you must supply the raw model + VAE files yourself.</p>
+        <div class="btn-row"><button id="install-musubi" class="primary">⬇ Install musubi-tuner</button></div>
+
+        <div class="model-dl" data-target="dit">
+          <div class="row between">
+            <h4>Raw base model — <code>krea2_raw.safetensors</code></h4>
+            <button class="link autofill-btn">✨ Auto-fill HF</button>
+          </div>
+          <div class="dl-grid">
+            <input type="text" class="dl-url" placeholder="Direct download URL (optional)" />
+            <div class="dl-hf">
+              <input type="text" class="dl-repo" list="dit-repos" placeholder="HF repo" />
+              <input type="text" class="dl-file" placeholder="filename in repo" />
+              <input type="password" class="dl-token" placeholder="HF token (if gated)" />
+            </div>
+            <datalist id="dit-repos"></datalist>
+            <span class="dl-note muted"></span>
+            <button class="ghost dl-btn">Download raw base model</button>
+          </div>
+        </div>
+
+        <div class="model-dl" data-target="vae">
+          <div class="row between">
+            <h4>VAE — <code>qwen_image_vae.safetensors</code></h4>
+            <button class="link autofill-btn">✨ Auto-fill HF</button>
+          </div>
+          <div class="dl-grid">
+            <input type="text" class="dl-url" placeholder="Direct download URL (optional)" />
+            <div class="dl-hf">
+              <input type="text" class="dl-repo" list="vae-repos" placeholder="HF repo" />
+              <input type="text" class="dl-file" placeholder="filename in repo" />
+              <input type="password" class="dl-token" placeholder="HF token (if gated)" />
+            </div>
+            <datalist id="vae-repos"></datalist>
+            <span class="dl-note muted"></span>
+            <button class="ghost dl-btn">Download VAE</button>
+          </div>
+        </div>
+      </details>
+
+      <!-- live setup log -->
+      <div id="setup-log-wrap" class="step hidden">
+        <h3><span class="spinner" id="setup-spinner"></span> <span id="setup-job-name">Working…</span></h3>
+        <pre id="setup-log" class="logbox"></pre>
+      </div>
+
+      <!-- advanced paths -->
+      <details class="step advanced">
+        <summary><h3 style="display:inline-flex"><span class="num">⚙</span> Advanced — file paths &amp; HF token</h3></summary>
+        <p class="hint">Only change these if your files live somewhere custom.</p>
+        <form id="settings-form" class="settings-form"></form>
+        <button id="save-settings" class="primary">Save settings</button>
+        <span id="settings-saved" class="saved-msg"></span>
+      </details>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
