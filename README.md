@@ -72,6 +72,33 @@ de-distill *assistant LoRA* is active during training and automatically removed 
 inference, so your character LoRA learns only your subject without breaking Turbo's
 step distillation.
 
+### Using the Raw (base, non-Turbo) engine
+
+Turbo is the default. To train on the **base/raw Krea 2 model** instead, use the
+**musubi-tuner (Raw)** engine:
+
+1. **Install the Raw engine** (not installed by default):
+
+   ```bash
+   bash scripts/setup.sh musubi      # or use the Setup tab → Install Raw engine
+   ```
+
+2. **Drop the model files into `./models/`** — unlike Turbo, these are **not**
+   auto-downloaded; you supply them yourself, with these exact names:
+
+   - `models/krea2_raw.safetensors` — the raw DiT model
+   - `models/qwen_image_vae.safetensors` — the VAE
+
+   The Setup tab lists both and shows them as *missing* until they're present. The
+   paths are configurable in **Setup → Advanced** (`dit_model`, `vae_model`).
+
+3. **Pick "musubi-tuner — Krea 2 Raw" when you create a project.** The engine is
+   chosen at project creation and is **fixed per project** — to switch an existing
+   Turbo project you create a new one with the Raw engine selected.
+
+A LoRA trained on the raw model still transfers to Turbo at inference, so unless
+you're reproducing the original 12 GB recipe, the default Turbo engine is recommended.
+
 ---
 
 ## Requirements
