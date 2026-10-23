@@ -128,7 +128,7 @@ label input { color: var(--text); }
 
 .params-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 14px; }
 .param label { font-size: 13px; }
-.param input { width: 100%; }
+.param input, .param select { width: 100%; }
 .param .desc { font-size: 11px; color: var(--muted); margin-top: 3px; }
 .param.checkbox { display: flex; align-items: center; gap: 8px; flex-direction: row; padding-top: 22px; }
 

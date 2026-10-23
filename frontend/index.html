@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Krea2 Character LoRA Trainer</title>
+  <title>LoRA Trainer</title>
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
@@ -11,7 +11,7 @@
     <div class="brand">
       <span class="logo">◆</span>
       <div>
-        <h1>Krea2 Character LoRA Trainer</h1>
+        <h1>LoRA Trainer</h1>
         <p class="subtitle">Train a character LoRA for the Krea 2 image model — no command line needed.</p>
       </div>
     </div>
@@ -31,6 +31,7 @@
           <select id="new-project-engine" title="Training engine">
             <option value="aitoolkit">Krea 2 Turbo (AI Toolkit) — recommended</option>
             <option value="musubi">Krea 2 Raw (musubi-tuner)</option>
+            <option value="moss">MOSS-Image (KohakuMossTrainer)</option>
           </select>
           <button id="create-project" class="primary">Create</button>
         </div>
@@ -122,8 +123,11 @@
             <div id="samples-groups"></div>
           </div>
 
-          <div class="turbo-tip">
+          <div id="turbo-tip" class="turbo-tip">
             <b>Using on Krea Turbo (ComfyUI):</b> load the LoRA at strength <b>0.8</b>, set <b>CFG 1.0</b>, sampler <b>ER-SDE</b>, <b>8 steps</b>. Include your trigger word in the prompt.
+          </div>
+          <div id="moss-tip" class="turbo-tip hidden">
+            <b>Using on MOSS-Image (ComfyUI):</b> each checkpoint exports both a <b>-comfy</b> file (native ComfyUI LoRA loader) and a <b>-lycoris</b> file (general LyCORIS-compatible tools). Include your trigger word in the prompt; sampler defaults are CFG ~3, ~50 steps (or a 4/8-step distilled sampler if you've installed one).
           </div>
         </div>
       </div>
@@ -191,6 +195,18 @@
             <span class="dl-note muted"></span>
             <button class="ghost dl-btn">Download VAE</button>
           </div>
+        </div>
+      </details>
+
+      <!-- ENGINE C: KohakuMossTrainer (MOSS-Image) -->
+      <details class="step">
+        <summary><h3 style="display:inline-flex"><span class="num">C</span> MOSS-Image engine (KohakuMossTrainer)</h3></summary>
+        <p class="hint">Trains a character LoRA for OpenMOSS's <b>MOSS-Image</b> model via
+          <a href="https://github.com/KohakuBlueleaf/KohakuMossTrainer" target="_blank" rel="noopener">KohakuMossTrainer</a>.
+          Uses the int8 ComfyUI-layout weights (~15&nbsp;GB) so it fits 6&ndash;24&nbsp;GB cards.</p>
+        <div class="btn-row">
+          <button id="install-moss" class="primary">⬇ Install KohakuMossTrainer</button>
+          <button id="download-moss-weights" class="ghost">Download MOSS-Image weights (~15 GB)</button>
         </div>
       </details>
 

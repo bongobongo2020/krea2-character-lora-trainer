@@ -1,5 +1,5 @@
 # ============================================================
-#  Krea 2 Character LoRA Trainer - Windows 11 installer
+#  LoRA Trainer - Windows 11 installer
 #  Run via Install.bat (double-click). No command line needed.
 # ============================================================
 $ErrorActionPreference = "Stop"
@@ -12,7 +12,7 @@ function Warn($m)  { Write-Host "    [!]  $m"   -ForegroundColor Yellow }
 function Info($m)  { Write-Host "    $m"        -ForegroundColor Gray }
 
 Write-Host "============================================" -ForegroundColor Magenta
-Write-Host "  Krea 2 Character LoRA Trainer - Setup" -ForegroundColor Magenta
+Write-Host "  LoRA Trainer - Setup" -ForegroundColor Magenta
 Write-Host "============================================" -ForegroundColor Magenta
 
 # --- 1. Dependencies: winget, git, python, uv ----------------------------
@@ -167,6 +167,51 @@ if ($ans -eq [System.Windows.Forms.DialogResult]::Yes) {
     Info "Skipped musubi-tuner. (Turbo engine is installed and ready.)"
 }
 
+# --- 6c. Optional third engine: KohakuMossTrainer (MOSS-Image) ----------
+Step "Optional third engine: KohakuMossTrainer (MOSS-Image)"
+Info "Trains a character LoRA for OpenMOSS's MOSS-Image model (a separate project from"
+Info "Krea 2). Downloads its own ~15 GB of int8 weights. You can always add this later"
+Info "by re-running the installer."
+$ans2 = [System.Windows.Forms.MessageBox]::Show(
+    "Also install the optional KohakuMossTrainer (MOSS-Image) engine?`n`nThis downloads another PyTorch environment plus ~15 GB of weights. Choose No to skip.",
+    "Install MOSS-Image engine?", [System.Windows.Forms.MessageBoxButtons]::YesNo,
+    [System.Windows.Forms.MessageBoxIcon]::Question)
+
+if ($ans2 -eq [System.Windows.Forms.DialogResult]::Yes) {
+    if (-not (Test-Path "KohakuMossTrainer\.git")) {
+        git clone https://github.com/KohakuBlueleaf/KohakuMossTrainer.git KohakuMossTrainer
+    } else {
+        git -C KohakuMossTrainer pull --ff-only
+    }
+    $mossPy = "KohakuMossTrainer\.venv\Scripts\python.exe"
+    if (-not (Test-Path "KohakuMossTrainer\.venv")) {
+        if ($UV) { uv venv --python 3.12 KohakuMossTrainer\.venv } else { & $PyExe @PyArgs -m venv KohakuMossTrainer\.venv }
+    }
+    # cu130/cu128/cu126 to match the installed driver; cu124 as a safe fallback.
+    $cudaTag = "cu124"
+    if ($Gpu) {
+        try {
+            $drvLine = (& nvidia-smi | Select-String "CUDA Version").ToString()
+            if ($drvLine -match "CUDA Version:\s*(\d+)") {
+                switch ($matches[1]) { "13" { $cudaTag = "cu130" } "12" { $cudaTag = "cu128" } }
+            }
+        } catch {}
+    }
+    Info "Installing PyTorch ($cudaTag)..."
+    PipInstall $mossPy "torch>=2.13,<2.15 torchvision --index-url https://download.pytorch.org/whl/$cudaTag"
+    Info "Installing KohakuMossTrainer (editable, from source — the PyPI wheel is missing packaged tokenizer files)..."
+    Push-Location KohakuMossTrainer
+    if ($UV) { uv pip install --python ".venv\Scripts\python.exe" -e ".[cuda]" --extra-index-url "https://download.pytorch.org/whl/$cudaTag" }
+    else { & ".venv\Scripts\python.exe" -m pip install -e ".[cuda]" --extra-index-url "https://download.pytorch.org/whl/$cudaTag" }
+    Pop-Location
+    PipInstall $mossPy "sentencepiece"
+    $InstalledMoss = $true
+    Ok "KohakuMossTrainer ready (download the MOSS-Image weights from the app's Setup tab)"
+} else {
+    $InstalledMoss = $false
+    Info "Skipped KohakuMossTrainer."
+}
+
 # --- 7. Write settings (paths + models folder + tuning) ------------------
 Step "Saving settings"
 New-Item -ItemType Directory -Force -Path "workspace\projects" | Out-Null
@@ -183,6 +228,11 @@ if ($InstalledMusubi) {
     $settings.musubi_dir     = (Join-Path $Root "musubi-tuner")
     $settings.accelerate_bin = (Join-Path $Root "musubi-tuner\.venv\Scripts\accelerate.exe")
 }
+if ($InstalledMoss) {
+    $settings.moss_dir         = (Join-Path $Root "KohakuMossTrainer")
+    $settings.moss_python      = (Join-Path $Root "KohakuMossTrainer\.venv\Scripts\python.exe")
+    $settings.moss_weights_dir = (Join-Path $Root "models\moss-image")
+}
 $settings | ConvertTo-Json | Set-Content -Encoding UTF8 "workspace\settings.json"
 Ok "Settings written (models folder: $ModelsDir)"
 
@@ -190,7 +240,7 @@ Ok "Settings written (models folder: $ModelsDir)"
 Step "Creating desktop shortcut"
 try {
     $ws = New-Object -ComObject WScript.Shell
-    $lnk = $ws.CreateShortcut((Join-Path ([Environment]::GetFolderPath("Desktop")) "Krea 2 LoRA Trainer.lnk"))
+    $lnk = $ws.CreateShortcut((Join-Path ([Environment]::GetFolderPath("Desktop")) "LoRA Trainer.lnk"))
     $lnk.TargetPath = (Join-Path $PSScriptRoot "Start.bat")
     $lnk.WorkingDirectory = $Root
     $lnk.IconLocation = "shell32.dll,13"
@@ -200,6 +250,6 @@ try {
 
 Write-Host "`n============================================" -ForegroundColor Green
 Write-Host "  Setup complete!" -ForegroundColor Green
-Write-Host "  Launch with the 'Krea 2 LoRA Trainer' desktop icon," -ForegroundColor Green
+Write-Host "  Launch with the 'LoRA Trainer' desktop icon," -ForegroundColor Green
 Write-Host "  or run windows\Start.bat. Your browser opens automatically." -ForegroundColor Green
 Write-Host "============================================" -ForegroundColor Green

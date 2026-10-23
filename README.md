@@ -1,10 +1,10 @@
-# Krea 2 Character LoRA Trainer
+# LoRA Trainer
 
 Train a **character LoRA for the Krea 2 image model** through a clean web UI —
 no command line needed. Upload 10–20 images, auto-caption them, click **Start
 training**, and download a Turbo-ready `.safetensors` LoRA.
 
-![Krea 2 Character LoRA Trainer — Projects page](images/app-projects.png)
+![LoRA Trainer — Projects page](images/app-projects.png)
 
 ---
 
@@ -60,17 +60,26 @@ workspace/         Created at runtime: per-project datasets, configs, logs, outp
 
 ---
 
-## Two engines
+## Three engines
 
 | Engine | Trains on | Notes | When to use |
 |--------|-----------|-------|-------------|
 | **AI Toolkit — Krea 2 Turbo** *(default, recommended)* | `krea/Krea-2-Turbo` + de-distill adapter | Base model is **not gated**, auto-downloads. Turbo-native results. | Almost always. |
 | **musubi-tuner — Krea 2 Raw** *(optional)* | Krea 2 raw model | You supply the raw model + VAE files. LoRA also transfers to Turbo. | Reproducing the original 12 GB recipe. |
+| **KohakuMossTrainer — MOSS-Image** *(optional)* | `Comfy-Org/MOSS-Image` (int8, ~15 GB) | Separate engine/venv; auto-downloads the int8 weights via the Setup tab. | Training a character LoRA for [OpenMOSS's MOSS-Image](https://github.com/OpenMOSS/MOSS-Image). |
 
 The Turbo engine uses [ostris/ai-toolkit](https://github.com/ostris/ai-toolkit). The
 de-distill *assistant LoRA* is active during training and automatically removed at
 inference, so your character LoRA learns only your subject without breaking Turbo's
 step distillation.
+
+The MOSS-Image engine uses [KohakuBlueleaf/KohakuMossTrainer](https://github.com/KohakuBlueleaf/KohakuMossTrainer)
+(built by the LyCORIS author). It reuses the same image + `.txt`-caption dataset you'd
+build for the other engines. Defaults (rank 16, LR 1e-4, ~1200 steps) follow the
+community-verified recipe — character likeness typically lands by step 600-900 at this
+rank/LR. **Note:** the installer installs it *editable from its git clone*, not the PyPI
+wheel — the published `kohakumoss` 0.1.0 wheel is missing packaged tokenizer files that
+break text-encoding; the source checkout has them.
 
 ### Using the Raw (base, non-Turbo) engine
 
@@ -130,7 +139,7 @@ which models are already cached:
 
 ![Setup tab — readiness and model cache](images/setup.png)
 
-Launch with the **“Krea 2 LoRA Trainer”** desktop icon (or `windows\Start.bat`) — your
+Launch with the **“LoRA Trainer”** desktop icon (or `windows\Start.bat`) — your
 browser opens to the app automatically. Windows may prompt to allow the app through the
 firewall (only needed for access from other devices on your network).
 

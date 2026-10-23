@@ -1,5 +1,5 @@
 #!/bin/bash
-# Start the Krea2 LoRA Trainer web app (backend + frontend on one port).
+# Start the LoRA Trainer web app (backend + frontend on one port).
 set -e
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
@@ -20,7 +20,7 @@ PORT="${PORT:-8000}"
 
 # Best-effort: show the LAN address other devices should open.
 LAN_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
-echo "==> Krea2 LoRA Trainer starting on $HOST:$PORT"
+echo "==> LoRA Trainer starting on $HOST:$PORT"
 echo "    Local:   http://127.0.0.1:$PORT"
 [ -n "$LAN_IP" ] && echo "    Network: http://$LAN_IP:$PORT   (open this from other LAN devices)"
 echo "    If a firewall is on, allow the port, e.g.:  sudo ufw allow $PORT/tcp"

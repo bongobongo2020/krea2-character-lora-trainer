@@ -1,4 +1,4 @@
-"""FastAPI server: REST API + static frontend for the Krea2 LoRA trainer."""
+"""FastAPI server: REST API + static frontend for the LoRA trainer."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -15,7 +15,7 @@ from .trainer import Project, manager
 APP_ROOT = Path(__file__).resolve().parent.parent
 FRONTEND_DIR = APP_ROOT / "frontend"
 
-app = FastAPI(title="Krea2 Character LoRA Trainer")
+app = FastAPI(title="LoRA Trainer")
 
 
 # --- settings ------------------------------------------------------------
@@ -35,6 +35,10 @@ class SettingsIn(BaseModel):
     accelerate_bin: str | None = None
     dit_model: str | None = None
     vae_model: str | None = None
+    # KohakuMossTrainer (MOSS-Image)
+    moss_dir: str | None = None
+    moss_python: str | None = None
+    moss_weights_dir: str | None = None
 
 
 @app.get("/api/settings")
@@ -273,6 +277,9 @@ def preview_command(project_id: str) -> dict[str, Any]:
     if proj.engine == "aitoolkit":
         config_text = proj.yaml_file.read_text()
         config_label = "config.yaml"
+    elif proj.engine == "moss":
+        config_text = proj.moss_run_file.read_text()
+        config_label = "moss_run.py"
     else:
         config_text = proj.toml_file.read_text()
         config_label = "dataset.toml"
@@ -335,6 +342,24 @@ def setup_predownload_turbo() -> dict[str, Any]:
 def setup_install_musubi() -> dict[str, Any]:
     try:
         setup_tasks.start_install_musubi()
+    except RuntimeError as e:
+        raise HTTPException(409, str(e))
+    return {"started": True}
+
+
+@app.post("/api/setup/install_moss")
+def setup_install_moss() -> dict[str, Any]:
+    try:
+        setup_tasks.start_install_moss()
+    except RuntimeError as e:
+        raise HTTPException(409, str(e))
+    return {"started": True}
+
+
+@app.post("/api/setup/download_moss_weights")
+def setup_download_moss_weights() -> dict[str, Any]:
+    try:
+        setup_tasks.start_download_moss_weights()
     except RuntimeError as e:
         raise HTTPException(409, str(e))
     return {"started": True}
@@ -573,7 +598,7 @@ def _comfy_unload(pid: int) -> int | None:
 
 
 # VRAM (MB) each engine/task needs free before it will reliably run.
-VRAM_NEED_MB = {"aitoolkit": 18000, "musubi": 11000, "caption": 4000}
+VRAM_NEED_MB = {"aitoolkit": 18000, "musubi": 11000, "moss": 7000, "caption": 4000}
 
 
 def auto_free_vram(settings: dict[str, Any], need_mb: int) -> dict[str, Any]:
@@ -685,6 +710,7 @@ def hardware() -> dict[str, Any]:
         "recommendations": {
             "aitoolkit": trainer.recommend_params("aitoolkit", hw.get("vram_mb")),
             "musubi": trainer.recommend_params("musubi", hw.get("vram_mb")),
+            "moss": trainer.recommend_params("moss", hw.get("vram_mb")),
         },
     }
 

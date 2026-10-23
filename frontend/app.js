@@ -54,8 +54,20 @@ const PARAM_FIELDS_MUSUBI = [
   { key: "fp8", label: "FP8 quantization", type: "checkbox", desc: "Required to fit on 12GB GPUs." },
 ];
 
-const paramFields = (engine) => engine === "musubi" ? PARAM_FIELDS_MUSUBI : PARAM_FIELDS_AITK;
-const engineLabel = (engine) => engine === "musubi" ? "Krea 2 Raw · musubi-tuner" : "Krea 2 Turbo · AI Toolkit";
+const PARAM_FIELDS_MOSS = [
+  { key: "resolution", label: "Resolution", type: "number", desc: "Square target area (px). 1024 default; lower for speed/less VRAM." },
+  { key: "network_dim", label: "LoRA rank (DIM)", type: "number", desc: "Capacity. 16 is a good default for one character." },
+  { key: "network_alpha", label: "LoRA alpha (ALPHA)", type: "number", desc: "Usually equal to rank." },
+  { key: "learning_rate", label: "Learning rate (LR)", type: "number", step: "any", desc: "1e-4 works well for characters." },
+  { key: "steps", label: "Steps", type: "number", desc: "Total training steps. Likeness usually lands by 600-900; 1200 default." },
+  { key: "sample_every", label: "Sample every (steps)", type: "number", desc: "Preview-image + checkpoint-friendly frequency." },
+  { key: "vram_profile", label: "VRAM profile", type: "select", options: ["6", "8", "12", "16", "24", "auto"], desc: "Matches KohakuMossTrainer's --vram presets." },
+  { key: "seed", label: "Seed", type: "number", desc: "For reproducibility." },
+];
+
+const paramFields = (engine) => engine === "musubi" ? PARAM_FIELDS_MUSUBI : engine === "moss" ? PARAM_FIELDS_MOSS : PARAM_FIELDS_AITK;
+const engineLabel = (engine) => engine === "musubi" ? "Krea 2 Raw · musubi-tuner"
+  : engine === "moss" ? "MOSS-Image · KohakuMossTrainer" : "Krea 2 Turbo · AI Toolkit";
 
 const SETTINGS_FIELDS = [
   { key: "hf_home", label: "Central model cache (HF_HOME) — e.g. /mnt/ai-models/huggingface" },
@@ -70,6 +82,9 @@ const SETTINGS_FIELDS = [
   { key: "accelerate_bin", label: "accelerate binary" },
   { key: "dit_model", label: "Krea2 raw model (krea2_raw.safetensors)" },
   { key: "vae_model", label: "VAE model (qwen_image_vae.safetensors)" },
+  { key: "moss_dir", label: "KohakuMossTrainer directory" },
+  { key: "moss_python", label: "KohakuMossTrainer Python binary" },
+  { key: "moss_weights_dir", label: "MOSS-Image weights folder (ComfyUI layout)" },
 ];
 
 // ---- app state ----------------------------------------------------------
@@ -161,6 +176,8 @@ async function openProject(id) {
   badge.textContent = engineLabel(proj.engine);
   badge.className = "badge " + (proj.engine === "aitoolkit" ? "rec" : "");
   $("#trigger-word").value = proj.params.trigger_word || "";
+  $("#turbo-tip").classList.toggle("hidden", proj.engine === "moss");
+  $("#moss-tip").classList.toggle("hidden", proj.engine !== "moss");
   renderParams(proj.params);
   renderHardware();
   renderImages(proj.images);
@@ -206,9 +223,9 @@ async function refreshVram() {
     if (!g.available || !g.gpus?.length) { banner.classList.add("hidden"); renderVramProcs([]); return; }
     const gpu = g.gpus[0];
     const freeGb = (gpu.free_mb / 1024).toFixed(1), totalGb = (gpu.total_mb / 1024).toFixed(0);
-    const isTurbo = state.project.engine === "aitoolkit";
-    // Krea 2 (12B) training wants most of the card; warn if little is free.
-    const needGb = isTurbo ? 18 : 11;
+    // Krea 2 (12B) training wants most of the card; MOSS-Image (5B, int8) is lighter.
+    const needGb = state.project.engine === "aitoolkit" ? 18
+      : state.project.engine === "moss" ? 7 : 11;
     if (gpu.free_mb / 1024 < needGb) {
       const hogs = (g.processes || []).filter((p) => p.used_mb > 500)
         .map((p) => `${p.name} (${(p.used_mb / 1024).toFixed(1)} GB)`).join(", ");
@@ -306,6 +323,11 @@ function renderParams(params) {
     if (f.type === "checkbox") {
       wrap.innerHTML = `<input type="checkbox" id="p-${f.key}" ${params[f.key] ? "checked" : ""}/>` +
         `<label for="p-${f.key}">${f.label}</label>`;
+    } else if (f.type === "select") {
+      const opts = f.options.map((o) =>
+        `<option value="${o}" ${String(params[f.key]) === o ? "selected" : ""}>${o}</option>`).join("");
+      wrap.innerHTML = `<label>${f.label}<select id="p-${f.key}">${opts}</select></label>` +
+        `<div class="desc">${f.desc}</div>`;
     } else {
       wrap.innerHTML = `<label>${f.label}` +
         `<input type="number" id="p-${f.key}" value="${params[f.key]}" ${f.step ? `step="${f.step}"` : ""}/></label>` +
@@ -313,7 +335,7 @@ function renderParams(params) {
     }
     grid.appendChild(wrap);
   }
-  grid.querySelectorAll("input").forEach((inp) =>
+  grid.querySelectorAll("input,select").forEach((inp) =>
     inp.addEventListener("change", saveParams));
 }
 
@@ -321,7 +343,7 @@ async function saveParams() {
   const params = {};
   for (const f of paramFields(state.project.engine)) {
     const el = $(`#p-${f.key}`);
-    params[f.key] = f.type === "checkbox" ? el.checked : Number(el.value);
+    params[f.key] = f.type === "checkbox" ? el.checked : f.type === "select" ? el.value : Number(el.value);
   }
   params.trigger_word = $("#trigger-word").value.trim();
   const proj = await api(`/projects/${state.project.id}/params`, {
@@ -710,7 +732,7 @@ async function pollSetup() {
   }
 }
 
-const SETUP_BTNS = "#install-aitoolkit,#predownload-turbo,#install-musubi,.dl-btn";
+const SETUP_BTNS = "#install-aitoolkit,#predownload-turbo,#install-musubi,#install-moss,#download-moss-weights,.dl-btn";
 const setupButtons = (disabled) =>
   document.querySelectorAll(SETUP_BTNS).forEach((b) => (b.disabled = disabled));
 
@@ -733,6 +755,8 @@ async function runSetup(path) {
 $("#install-aitoolkit").addEventListener("click", () => runSetup("/setup/install_aitoolkit"));
 $("#predownload-turbo").addEventListener("click", () => runSetup("/setup/predownload_turbo"));
 $("#install-musubi").addEventListener("click", () => runSetup("/setup/install_musubi"));
+$("#install-moss").addEventListener("click", () => runSetup("/setup/install_moss"));
+$("#download-moss-weights").addEventListener("click", () => runSetup("/setup/download_moss_weights"));
 
 let modelSuggestions = null;
 async function getSuggestions() {

@@ -1,13 +1,16 @@
-"""Project storage + training process management (two engines).
+"""Project storage + training process management (three engines).
 
 A *project* is one character LoRA. Depending on its ``engine`` it is turned into
-either:
+one of:
 
 * **aitoolkit** — an AI Toolkit YAML config run with ``python run.py config.yaml``,
   training on ``krea/Krea-2-Turbo`` with the de-distill assistant LoRA. Produces
   a Turbo-native LoRA.
 * **musubi** — a ``dataset.toml`` + ``accelerate launch krea2_train_network.py``
   command training on the Krea 2 raw model.
+* **moss** — a generated ``moss_run.py`` launcher that drives KohakuMossTrainer's
+  ``kohakumoss-config`` + ``kogine`` CLI (data caching, then training) for a LoRA
+  on MOSS-Image.
 
 Only one training run executes at a time (single-GPU assumption).
 """
@@ -32,7 +35,7 @@ from . import config
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 
-ENGINES = ("aitoolkit", "musubi")
+ENGINES = ("aitoolkit", "musubi", "moss")
 DEFAULT_ENGINE = "aitoolkit"
 
 # AI Toolkit (Krea 2 Turbo) defaults.
@@ -67,9 +70,32 @@ DEFAULT_PARAMS_MUSUBI: dict[str, Any] = {
     "seed": 42,
 }
 
+# KohakuMossTrainer (MOSS-Image) defaults. Rank 16/LR 1e-4/~1200 steps matches
+# the community-verified recipe (resemblance lands around step 600-900 at this
+# rank/LR; the tool's own factory default of rank 32 is heavier than needed for
+# a single-character LoRA). VRAM profile + resolution are auto-tuned per GPU in
+# recommend_params() below.
+DEFAULT_PARAMS_MOSS: dict[str, Any] = {
+    "trigger_word": "mychar",
+    "resolution": 1024,
+    "network_dim": 16,
+    "network_alpha": 16,
+    "learning_rate": 1e-4,
+    "steps": 1200,
+    "sample_every": 200,
+    "vram_profile": "12",  # "6"|"8"|"12"|"16"|"24"|"auto" — matches kohakumoss-config --vram
+    "seed": 42,
+}
+
+MOSS_VRAM_PROFILES = ("6", "8", "12", "16", "24", "auto")
+
 
 def default_params(engine: str) -> dict[str, Any]:
-    return dict(DEFAULT_PARAMS_AITK if engine == "aitoolkit" else DEFAULT_PARAMS_MUSUBI)
+    if engine == "musubi":
+        return dict(DEFAULT_PARAMS_MUSUBI)
+    if engine == "moss":
+        return dict(DEFAULT_PARAMS_MOSS)
+    return dict(DEFAULT_PARAMS_AITK)
 
 
 def recommend_params(engine: str, vram_mb: int | None) -> dict[str, Any]:
@@ -89,6 +115,18 @@ def recommend_params(engine: str, vram_mb: int | None) -> dict[str, Any]:
         if gb >= 14:
             return {"quantize": True, "low_vram": True, "resolution": 768}
         return {"quantize": True, "low_vram": True, "resolution": 512}
+    if engine == "moss":  # MOSS-Image, 5B
+        if gb >= 30:
+            return {"vram_profile": "auto", "resolution": 1024}
+        if gb >= 20:
+            return {"vram_profile": "24", "resolution": 1024}
+        if gb >= 14:
+            return {"vram_profile": "16", "resolution": 1024}
+        if gb >= 10:
+            return {"vram_profile": "12", "resolution": 768}
+        if gb >= 7:
+            return {"vram_profile": "8", "resolution": 512}
+        return {"vram_profile": "6", "resolution": 512}
     # musubi raw, 12B — trade VRAM for speed via block swap
     if gb >= 32:
         return {"blocks_to_swap": 0, "fp8": True, "resolution": 1024}
@@ -128,6 +166,11 @@ class Project:
 
     @property
     def output_dir(self) -> Path:
+        if self.engine == "moss":
+            # KohakuMossTrainer writes to <repo>/runs/moss/<RUN_NAME>/ (OUTPUT_DIR
+            # default), not into our own project folder.
+            settings = config.load_settings()
+            return Path(settings["moss_dir"]) / "runs" / "moss" / self.id
         return self.dir / "output"
 
     @property
@@ -145,6 +188,18 @@ class Project:
     @property
     def yaml_file(self) -> Path:
         return self.dir / "config.yaml"
+
+    @property
+    def moss_train_cfg(self) -> Path:
+        return self.dir / "moss_train.py"
+
+    @property
+    def moss_data_cfg(self) -> Path:
+        return self.dir / "moss_train_data.py"
+
+    @property
+    def moss_run_file(self) -> Path:
+        return self.dir / "moss_run.py"
 
     @property
     def meta_file(self) -> Path:
@@ -336,8 +391,95 @@ class Project:
         self.toml_file.write_text(toml)
         return toml
 
+    def generate_moss_config(self, settings: dict[str, Any]) -> str:
+        """Generate the KohakuMossTrainer train+data config via its own
+        ``kohakumoss-config`` CLI (so we never have to guess its Python config
+        syntax), then build a small launcher script that chains the required
+        data-prep steps (inspect/cache_text/cache_latents) and training into
+        one process — ``TrainingManager`` only streams a single subprocess.
+
+        The exact ``kogine run <script> --config <path>`` invocations are
+        parsed straight out of kohakumoss-config's own "next:" hint rather than
+        assumed, since the script paths point into the installed package and
+        differ by OS/Python version.
+        """
+        p = self.params
+        res = int(p["resolution"])
+        target_area = res * res
+        moss_dir = settings["moss_dir"]
+        cfg_bin = config.venv_bin(Path(moss_dir) / ".venv", "kohakumoss-config")
+        kogine_bin = config.venv_bin(Path(moss_dir) / ".venv", "kogine")
+        trigger = (p.get("trigger_word") or "mychar").strip() or "mychar"
+
+        gen_argv = [
+            cfg_bin, "new", "train",
+            "--weights", settings["moss_weights_dir"],
+            "--data", str(self.images_dir),
+            "--source", "folder",
+            "--name", self.id,
+            "--vram", str(p.get("vram_profile", "12")),
+            "--precision", "bf16",
+            "--steps", str(int(p["steps"])),
+            "--prompt", f"{trigger}, portrait, studio lighting, white background",
+            "--out", str(self.moss_train_cfg),
+            "--force",
+        ]
+        result = subprocess.run(gen_argv, cwd=moss_dir, capture_output=True, text=True)
+        output = result.stdout + result.stderr
+        if result.returncode != 0:
+            raise RuntimeError(f"kohakumoss-config failed:\n{output}")
+
+        steps_argv: list[list[str]] = []
+        for line in output.splitlines():
+            line = line.strip()
+            if line.startswith("kogine run "):
+                steps_argv.append(shlex.split(line)[1:])  # drop "kogine", keep "run ..."
+        if len(steps_argv) != 4:
+            raise RuntimeError(
+                "Could not parse KohakuMossTrainer's generated run commands:\n" + output)
+
+        inspect_a, cache_text_a, cache_latents_a, train_a = steps_argv
+        cache_text_a += ["--set", f"TARGET_AREA={target_area}"]
+        cache_latents_a += ["--set", f"TARGET_AREA={target_area}"]
+        train_a += [
+            "--set", f"DIM={int(p['network_dim'])}",
+            "--set", f"ALPHA={float(p['network_alpha'])}",
+            "--set", f"LR={float(p['learning_rate'])}",
+            "--set", f"SAMPLE_EVERY={int(p['sample_every'])}",
+        ]
+
+        lines = [
+            "# Auto-generated by LoRA Trainer. Chains KohakuMossTrainer's data-prep",
+            "# + training steps so they stream through one subprocess.",
+            "import subprocess, sys",
+            "",
+            f"KOGINE = {str(kogine_bin)!r}",
+            "",
+            "def run(argv):",
+            "    print('+', ' '.join(argv), flush=True)",
+            "    r = subprocess.run([KOGINE] + argv)",
+            "    if r.returncode != 0:",
+            "        sys.exit(r.returncode)",
+            "",
+            f"run({inspect_a!r})",
+            f"run({cache_text_a!r})",
+            f"run({cache_latents_a!r})",
+            f"run({train_a!r})",
+            "",
+        ]
+        script = "\n".join(lines)
+        self.moss_run_file.write_text(script)
+        return script
+
     def build_command(self, settings: dict[str, Any]) -> tuple[list[str], str, dict[str, str]]:
         """Return (argv, cwd, extra_env) for the project's engine."""
+        if self.engine == "moss":
+            self.generate_moss_config(settings)
+            argv = [settings["moss_python"], str(self.moss_run_file)]
+            env = {"PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
+                   **config.hf_env(settings)}
+            return argv, settings["moss_dir"], env
+
         if self.engine == "aitoolkit":
             self.generate_aitoolkit_yaml(settings)
             argv = [settings["aitoolkit_python"], "run.py", str(self.yaml_file)]
@@ -383,7 +525,49 @@ class Project:
                **config.hf_env(settings)}
         return argv, settings["musubi_dir"], env
 
+    def _moss_format_label(self, stem: str) -> str:
+        if stem.endswith("-comfy"):
+            return "ComfyUI"
+        if stem.endswith("-lycoris"):
+            return "LyCORIS"
+        return ""
+
     def list_outputs(self) -> list[dict[str, Any]]:
+        if self.engine == "moss":
+            # KohakuMossTrainer exports each checkpoint as a pair of files
+            # (comfy + lycoris format) under <RUN>/checkpoints/step_NNNNNNNN/export/,
+            # with the same pair for the final run directly under <RUN>/export/.
+            items: list[dict[str, Any]] = []
+            final_dir = self.output_dir / "export"
+            if final_dir.exists():
+                for p in sorted(final_dir.glob("*.safetensors")):
+                    fmt = self._moss_format_label(p.stem)
+                    items.append({
+                        "filename": p.name, "relpath": f"export/{p.name}",
+                        "size": p.stat().st_size, "step": None,
+                        "label": f"Final" + (f" ({fmt})" if fmt else ""), "final": True,
+                    })
+            ckpt_dir = self.output_dir / "checkpoints"
+            if ckpt_dir.exists():
+                for stepdir in sorted(ckpt_dir.iterdir()):
+                    m = re.match(r"step_(\d+)$", stepdir.name)
+                    if not m or not stepdir.is_dir():
+                        continue
+                    step = int(m.group(1))
+                    export = stepdir / "export"
+                    if not export.exists():
+                        continue
+                    for p in sorted(export.glob("*.safetensors")):
+                        fmt = self._moss_format_label(p.stem)
+                        items.append({
+                            "filename": p.name,
+                            "relpath": f"checkpoints/{stepdir.name}/export/{p.name}",
+                            "size": p.stat().st_size, "step": step,
+                            "label": f"Step {step}" + (f" ({fmt})" if fmt else ""), "final": False,
+                        })
+            items.sort(key=lambda x: (x["final"], x["step"] or 0))
+            return items
+
         items = []
         if self.output_dir.exists():
             for p in self.output_dir.rglob("*.safetensors"):
@@ -412,7 +596,24 @@ class Project:
         """Preview images written during training, grouped by step.
 
         AI Toolkit names them ``<timestamp>__<step>_<promptindex>.jpg``.
+        KohakuMossTrainer (moss) writes ``samples/step_NNNNNNNN/000.png`` etc.
         """
+        if self.engine == "moss":
+            groups = []
+            sdir = self.output_dir / "samples"
+            if sdir.exists():
+                for stepdir in sorted(sdir.iterdir()):
+                    m = re.match(r"step_(\d+)$", stepdir.name)
+                    if not m or not stepdir.is_dir():
+                        continue
+                    step = int(m.group(1))
+                    imgs = [{"relpath": str(img.relative_to(self.output_dir)), "index": i}
+                            for i, img in enumerate(sorted(stepdir.glob("*.png")))]
+                    if imgs:
+                        groups.append({"step": step, "label": f"Step {step}", "images": imgs})
+            groups.sort(key=lambda g: g["step"])
+            return groups
+
         by_step: dict[int, list[dict[str, Any]]] = {}
         if self.output_dir.exists():
             for sdir in self.output_dir.rglob("samples"):
@@ -537,7 +738,8 @@ class TrainingManager:
 
     def status(self, project: Project) -> dict[str, Any]:
         running = self.is_running() and self._project_id == project.id
-        progress = _parse_progress(project.log_file)
+        total_steps = int(project.params.get("steps") or 0) or None
+        progress = _parse_progress(project.log_file, engine=project.engine, total_steps=total_steps)
         exit_code = None
         if self._project_id == project.id and self._proc is not None and not self.is_running():
             exit_code = self._proc.returncode
@@ -554,9 +756,14 @@ class TrainingManager:
 _STEP_RE = re.compile(r"(\d+)\s*/\s*(\d+)")
 _LOSS_RE = re.compile(r"loss[=:\s]+([0-9]*\.?[0-9]+)", re.IGNORECASE)
 _EPOCH_RE = re.compile(r"epoch[:\s]+(\d+)\s*/\s*(\d+)", re.IGNORECASE)
+# KohakuMossTrainer's console line: "[...] [training.callbacks.monitor] [INFO]
+# step 150 [loss=0.0008107, grad_norm=0.004728, lr=1e-05]". Its tqdm bar also
+# contains an unrelated "N/M" batch counter (e.g. "batch 1/1:") before the real
+# step/total, which _STEP_RE would match first — so moss gets its own parser.
+_MOSS_STEP_RE = re.compile(r"\bstep (\d+) \[loss=([0-9.eE+-]+)")
 
 
-def _parse_progress(log_file: Path) -> dict[str, Any]:
+def _parse_progress(log_file: Path, engine: str = "", total_steps: int | None = None) -> dict[str, Any]:
     result: dict[str, Any] = {"step": None, "total_steps": None, "loss": None,
                               "epoch": None, "total_epochs": None}
     if not log_file.exists():
@@ -564,6 +771,15 @@ def _parse_progress(log_file: Path) -> dict[str, Any]:
     try:
         tail = _read_tail(log_file, 8000)
     except OSError:
+        return result
+    if engine == "moss":
+        for line in reversed(tail.splitlines()):
+            m = _MOSS_STEP_RE.search(line)
+            if m:
+                result["step"] = int(m.group(1))
+                result["total_steps"] = total_steps
+                result["loss"] = float(m.group(2))
+                break
         return result
     for line in reversed(tail.splitlines()):
         if "steps:" in line.lower() or "/it" in line or "it/s" in line or "%|" in line:

@@ -99,6 +99,42 @@ def start_install_musubi() -> None:
     runner.start("Installing Musubi-Tuner + training environment", ["bash", str(script)])
 
 
+def start_install_moss() -> None:
+    """Clone + install KohakuMossTrainer and its training virtualenv."""
+    script = APP_ROOT / "scripts" / "install_moss.sh"
+    runner.start("Installing KohakuMossTrainer + training environment", ["bash", str(script)])
+
+
+def start_download_moss_weights() -> None:
+    """Download the ~15 GB int8 ComfyUI-layout MOSS-Image weights (DiT, Qwen3.5
+    text encoder, VAE) that KohakuMossTrainer expects."""
+    settings = config.load_settings()
+    dest = Path(settings["moss_weights_dir"])
+    dest.mkdir(parents=True, exist_ok=True)
+    files = [config.MOSS_DIT_FILE, config.MOSS_TEXT_ENCODER_FILE, config.MOSS_VAE_FILE]
+    py = (
+        "import os\n"
+        "from huggingface_hub import hf_hub_download\n"
+        "import shutil\n"
+        "dest = os.environ['DEST']\n"
+        "token = os.environ.get('TOKEN') or None\n"
+        "for f in os.environ['FILES'].split('|'):\n"
+        "    print('Downloading', f, flush=True)\n"
+        "    p = hf_hub_download('Comfy-Org/MOSS-Image', f, token=token)\n"
+        "    out = os.path.join(dest, *f.split('/'))\n"
+        "    os.makedirs(os.path.dirname(out), exist_ok=True)\n"
+        "    shutil.copy(p, out)\n"
+        "print('Done.')\n"
+    )
+    cmd = ["bash", "-c",
+           f'{sys.executable} -c "import huggingface_hub" 2>/dev/null || '
+           f'{sys.executable} -m pip install -q huggingface_hub; '
+           f'{sys.executable} -c "$PYCODE"']
+    env = {"PYCODE": py, "FILES": "|".join(files), "DEST": str(dest),
+           "TOKEN": settings.get("hf_token", "")}
+    runner.start("Downloading MOSS-Image weights (~15 GB)", cmd, env=env)
+
+
 def start_predownload_turbo() -> None:
     """Optionally pre-cache Krea-2-Turbo + the de-distill adapter from HF.
 

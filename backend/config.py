@@ -1,12 +1,14 @@
 """Application configuration and persistent settings.
 
-Two training engines are supported, each with its own paths/assets:
+Three training engines are supported, each with its own paths/assets:
 
 * **aitoolkit** — ostris/ai-toolkit training directly on the (un-gated)
   ``krea/Krea-2-Turbo`` model using the de-distill *assistant LoRA*
   (``ostris/krea2_turbo_training_adapter``). Turbo-native, recommended.
 * **musubi** — kohya-ss/musubi-tuner training on the Krea 2 *raw* model; the
   resulting LoRA also transfers to Turbo.
+* **moss** — KohakuBlueleaf/KohakuMossTrainer (``kogine``/``kohakumoss``)
+  training a LoRA for OpenMOSS's MOSS-Image model.
 
 Heavy paths are editable from the UI so the frontend can validate them before a
 run and guide setup.
@@ -76,7 +78,21 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "accelerate_bin": venv_bin(APP_ROOT / "musubi-tuner" / ".venv", "accelerate"),
     "dit_model": str(APP_ROOT / "models" / "krea2_raw.safetensors"),
     "vae_model": str(APP_ROOT / "models" / "qwen_image_vae.safetensors"),
+
+    # --- KohakuMossTrainer (MOSS-Image) ---
+    "moss_dir": str(APP_ROOT / "KohakuMossTrainer"),
+    "moss_python": venv_python(APP_ROOT / "KohakuMossTrainer" / ".venv"),
+    # Int8 ComfyUI-layout weights (~15 GB total): diffusion_models/, text_encoders/,
+    # vae/ subfolders under this directory. Fits 6-24GB cards; the bf16 HF layout
+    # (~26 GB) is for users who override moss_weights_dir themselves.
+    "moss_weights_dir": str(APP_ROOT / "models" / "moss-image"),
 }
+
+# Exact filenames KohakuMossTrainer expects inside moss_weights_dir (the
+# Comfy-Org/MOSS-Image int8 ComfyUI layout).
+MOSS_DIT_FILE = "diffusion_models/moss_image_base_int8_convrot.safetensors"
+MOSS_TEXT_ENCODER_FILE = "text_encoders/qwen3.5_9b_int8_convrot.safetensors"
+MOSS_VAE_FILE = "vae/flux2-vae_small.safetensors"
 
 SETTINGS_KEYS = list(DEFAULT_SETTINGS.keys())
 
@@ -287,6 +303,24 @@ def check_environment(settings: dict[str, Any]) -> dict[str, Any]:
          "path": settings["vae_model"], "exists": _exists(settings["vae_model"])},
     ]
 
+    moss_kogine = venv_bin(Path(settings["moss_dir"]) / ".venv", "kogine")
+    moss_cfg_bin = venv_bin(Path(settings["moss_dir"]) / ".venv", "kohakumoss-config")
+    moss_weights = Path(settings["moss_weights_dir"])
+    moss_items = [
+        {"key": "moss_dir", "label": "KohakuMossTrainer folder",
+         "path": settings["moss_dir"], "exists": _exists(settings["moss_dir"])},
+        {"key": "moss_kogine", "label": "kogine (training engine)",
+         "path": moss_kogine, "exists": _exists(moss_kogine)},
+        {"key": "moss_config_bin", "label": "kohakumoss-config",
+         "path": moss_cfg_bin, "exists": _exists(moss_cfg_bin)},
+        {"key": "moss_dit_model", "label": "MOSS-Image base model (int8)",
+         "path": str(moss_weights / MOSS_DIT_FILE), "exists": _exists(str(moss_weights / MOSS_DIT_FILE))},
+        {"key": "moss_text_encoder", "label": "Qwen3.5-9B text encoder (int8)",
+         "path": str(moss_weights / MOSS_TEXT_ENCODER_FILE), "exists": _exists(str(moss_weights / MOSS_TEXT_ENCODER_FILE))},
+        {"key": "moss_vae_model", "label": "VAE (flux2-vae_small)",
+         "path": str(moss_weights / MOSS_VAE_FILE), "exists": _exists(str(moss_weights / MOSS_VAE_FILE))},
+    ]
+
     return {
         "engines": {
             "aitoolkit": {
@@ -298,6 +332,11 @@ def check_environment(settings: dict[str, Any]) -> dict[str, Any]:
                 "label": "musubi-tuner — Krea 2 Raw",
                 "items": musubi_items,
                 "ready": all(i["exists"] for i in musubi_items),
+            },
+            "moss": {
+                "label": "KohakuMossTrainer — MOSS-Image",
+                "items": moss_items,
+                "ready": all(i["exists"] for i in moss_items),
             },
         }
     }
